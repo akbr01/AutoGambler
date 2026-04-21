@@ -69,7 +69,6 @@ class StateInitializer:
 
 # sloppy test code
 def test():
-    print("viktigt kolla så inte alla team får samma referens till skill.. tror ej det då immutable?")
     initial_team_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
     initial_home_advantage_dist = Model.NormalDistribution(0, 10)
     default_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
