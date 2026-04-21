@@ -4,9 +4,6 @@ import matplotlib.pyplot as plt
 import Model
 import Prediction
 
-# TODO: Lägg till att variansen ökar över tid
-# TODO: Ev att lag måste ha spelat en stund innan vi bettar på dessa
-
 class Reader:
     def get_dataframe(self, file: str) -> pd.DataFrame:
         raise NotImplementedError
@@ -63,57 +60,21 @@ class StateInitializer:
         all_teams = pd.concat([df["Home"], df["Away"]]).unique()
         return all_teams
 
-    # def _get_dataframe(self, file: str):
-    #     df = self.reader.get_dataframe(file)
-    #     return df
-
     def initialize_modelstate(self, file: str):
         df = self.reader.get_dataframe(file)
         all_teams = self._get_unique_teams_from_df(df)
         state = Model.ModelState(teams={team: self.default_skill for team in all_teams})
         return df, state
 
-# def initiate_teams(team_lst, start_mu, start_var):
-#     return {t: Model.Team(t, start_mu, start_var) for t in team_lst}
 
-
-def get_winning_and_losing_team_from_df_row(row):
-    tpe = row["Res"]
-    if tpe == "H":
-        return row["Home"], row["Away"]
-    if tpe == "A":
-        return row["Away"], row["Home"]
-    if tpe == "D":
-        return row["Away"], row["Home"]  # just for predicting, in training we skip
-
-
-def get_decimal_odds_dict_from_df_row(row, available_markets):
-    home = "CH"
-    tie = "CD"
-    away = "CA"
-    available_markets = [
-        m
-        for m in available_markets
-        if not (
-            pd.isna(row.get(m + home))
-            or pd.isna(row.get(m + tie))
-            or pd.isna(row.get(m + away))
-        )
-    ]
-    decimal_odds_dict = {
-        market: (row[market + home], row[market + tie], row[market + away])
-        for market in available_markets
-    }
-    return decimal_odds_dict
-
-
+# sloppy test code
 def test():
     print("viktigt kolla så inte alla team får samma referens till skill.. tror ej det då immutable?")
     initial_team_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
     initial_home_advantage_dist = Model.NormalDistribution(0, 10)
     default_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
-    # df, state = StateInitializer(ReaderFootballDataCoUK(), Model.AttackDefenseSkill(default_dist, default_dist)).initialize_modelstate("./datasets/SWE.csv")
-    df, state = StateInitializer(ReaderFootballDataCoUK(), Model.GeneralSkill(default_dist)).initialize_modelstate("./datasets/SWE.csv")
+    df, state = StateInitializer(ReaderFootballDataCoUK(), Model.AttackDefenseSkill(default_dist, default_dist)).initialize_modelstate("./datasets/SWE.csv")
+    # df, state = StateInitializer(ReaderFootballDataCoUK(), Model.GeneralSkill(default_dist)).initialize_modelstate("./datasets/SWE.csv")
     team_count = {k:0 for k in state.teams.keys()}
     state.home_advantage = initial_home_advantage_dist
     # print(df, state)
@@ -121,10 +82,10 @@ def test():
     # print(state.teams.get("AIK"))
     # print(state.teams.get("Orebro"))
 
-    # model = Model.TrueskillAdvancedAttackDefense(Model.DEFAULT_VAR_T, Model.DEFAULT_VAR_T)
-    # adapter = Model.TrueskillAdvancedAttackDefenseAdapter(model)
-    model = Model.TrueskillAdvanced(Model.DEFAULT_VAR_T, 1)
-    adapter = Model.TrueskillAdvancedAdapter(model)
+    model = Model.TrueskillAdvancedAttackDefense(Model.DEFAULT_VAR_T, Model.DEFAULT_VAR_T)
+    adapter = Model.TrueskillAdvancedAttackDefenseAdapter(model)
+    # model = Model.TrueskillAdvanced(Model.DEFAULT_VAR_T, 1)
+    # adapter = Model.TrueskillAdvancedAdapter(model)
     engine = Model.GameEngine(adapter, state)
     state_history = []
     dates = []
@@ -160,18 +121,7 @@ def test():
         else:
             print(f"skipping bet on {game}")
             bet_lst = []
-        # winning_prediction = [game.home, game.away, "tie"][np.argmax(prediction)]
         game = Model.Game(home, away, Model.Score(int(row["HG"]), int(row["AG"])))
-        # winner = None
-        # if game.score.outcome == Model.Outcome.HOME_WIN:
-        #     winner = str(row["Home"])
-        # if game.score.outcome == Model.Outcome.AWAY_WIN:
-        #     winner = str(row["Away"])
-        # if game.score.outcome == Model.Outcome.TIE:
-        #     winner = "tie"
-        # total = total + 1
-        # if winner == winning_prediction:
-        #     correct = correct + 1
         engine.update(game)
         team_count[home] += 1
         team_count[away] += 1
@@ -191,76 +141,4 @@ def test():
     # plt.legend()
     plt.show()
 
-
-
 test()
-# def main_old(filename):
-#     gameHandler = Model.GameHandler(Model.MessagePassingTrueSkill(), 5, 5)
-#     df = parse_series_to_df(filename)
-#     teams_lst = get_unique_teams_from_df(df)
-#     teams_lst = initiate_teams(
-#         teams_lst, Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR
-#     )
-#     df_train = df.iloc[:500]
-#     df_test = df.iloc[500:]
-#     df_train = df_train[df_train["Res"] != "D"]  # filter ties for now
-#
-#     #  Train model using the first couple of games
-#     for index, row in df_train.iterrows():
-#         winning_team, losing_team = get_winning_and_losing_team_from_df_row(row)
-#         winning_team = teams_lst.get(winning_team)
-#         losing_team = teams_lst.get(losing_team)
-#         gameHandler.update_team_posterior_skill_based_on_game(winning_team, losing_team)
-#
-#     team_skills = sorted(
-#         [[key, t.mean()] for key, t in teams_lst.items()],
-#         reverse=True,
-#         key=lambda x: x[1],
-#     )
-#     for ts in team_skills:
-#         print(f"{ts[0]} ===> Skill {round(ts[1], 2)}")
-#
-#     money = [100]  #  Budget
-#     prediction_and_gamble = Model.PredictionAndGamble(Model.kelly_basic)
-#     for index, row in df_test.iterrows():
-#         team_A, team_B = get_winning_and_losing_team_from_df_row(
-#             row
-#         )  # ofcourse now know yet...but lets pretend
-#         team_A = teams_lst.get(team_A)
-#         team_B = teams_lst.get(team_B)
-#         odds_dict = get_decimal_odds_dict_from_df_row(row)
-#         p_win = gameHandler.get_probablity_team1_wins(team_A, team_B)
-#         (
-#             market,
-#             team,
-#             values,
-#             odds,
-#             amount,
-#         ) = prediction_and_gamble.get_bet(money[-1], p_win, odds_dict)
-#         print(
-#             f"\nBetting market {market} on team {team} with amount {amount} and odds {odds}. Expected value {values[0]}"
-#         )
-#         # print(market, team, values, amount, bet)
-#         print(
-#             f"we bet on {team} and {row['Res']} won {'WE WON' if team==row['Res'] else 'we lost'}"
-#         )
-#         print(f"Money left {money[-1]}")
-#         if did_team_win_game(row["Res"], team):
-#             money.append(money[-1] + amount * odds)
-#         else:
-#             money.append(money[-1] - amount)
-#         if row["Res"] != "D":
-#             print("training model on this match..")
-#             gameHandler.update_team_posterior_skill_based_on_game(
-#                 winning_team, losing_team
-#             )
-#         else:
-#             print("skipping train since tie")
-#         time.sleep(1)
-#
-#     # for key, val in teams_lst.items():
-#     #     print(key, val)
-
-
-# main(r"datasets/SWE.csv")
-

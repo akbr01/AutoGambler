@@ -6,11 +6,6 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.stats import truncnorm, norm
 
-"""
-fixa en graf med lagens skill över tid
-4. skill variance increase over time???
-TODO: lägg in fler validate parameters i adaptrarna - tror det kanske är lite konstigt/fel där just nu
-"""
 
 DEFAULT_START_MU = 25
 DEFAULT_START_VAR = (25 / 3) ** 2
@@ -95,6 +90,30 @@ class ModelState(Generic[T]):
     def __str__(self):
         return f"Home Advantage ---> {self.home_advantage} <--- Home Advantage\n" + "\n".join([f"{v} <--- {k}" for k, v in self.teams.items()])
 
+def moment_match_truncated_gauss(start, end, m0, s0):
+    a_scaled, b_scaled = (start - m0) / np.sqrt(s0), (end - m0) / np.sqrt(s0)
+    m = truncnorm.mean(a_scaled, b_scaled, loc=m0, scale=np.sqrt(s0))
+    s = truncnorm.var(a_scaled, b_scaled, loc=m0, scale=np.sqrt(s0))
+    return m, s
+
+
+def get_gaussian_density_function(mean, variance, start, stop):
+    x = np.linspace(start, stop, 100)
+    curve = norm.pdf(x, loc=mean, scale=np.sqrt(variance))
+    return x, curve
+
+
+def get_cumulative_distribution_function(x1, x2, mean=0, var=1):
+    if x1 > x2:
+        raise ValueError(f"{x1=}<{x2=}")
+    return norm.cdf(x2, mean, np.sqrt(var)) - norm.cdf(x1, mean, np.sqrt(var))
+
+
+def get_gaussian_density_function_for_plotting(mean, variance):
+    var_3 = 3 * np.sqrt(variance)
+    return get_gaussian_density_function(mean, variance, mean - var_3, mean + var_3)
+
+
 
 class TrueskillAdapter(Generic[T]):
     def get_posterior(
@@ -121,30 +140,6 @@ class GameEngine(Generic[T]):
 
     def predict(self, game: Game) -> PredictionResult:
         return self.adapter.get_probabilities(game, self.state)
-
-
-# TODO: lägg in detta?
-# def update(state: ModelState, game: Game):
-#     home = state.teams[game.home_team]
-#     away = state.teams[game.away_team]
-#     # compute posteriors...
-#     new_home = TeamState(...)
-#     new_away = TeamState(...)
-#     new_adv = ...
-#     new_state = ModelState(
-#         teams={
-#             **state.teams,
-#             game.home_team: new_home,
-#             game.away_team: new_away,
-#         },
-#         home_advantage=new_adv
-#     )
-#     result = PosteriorResult(
-#         home=new_home,
-#         away=new_away,
-#         home_advantage=new_adv
-#     )
-#     return new_state, result
 
 
 class TrueskillBasicAdapter(TrueskillAdapter[GeneralSkill]):
@@ -204,8 +199,8 @@ class TrueskillBasicAdapter(TrueskillAdapter[GeneralSkill]):
 
 class TrueskillAdvancedAdapter(TrueskillAdapter[GeneralSkill]):
     """
-    Här ska gränsen mellan fina gränssnitts-grunkor (klasser) gå.
-    NormalDist-grunkan är ok däremot - används faktiskt i matten
+    adaptrarna är gränsen för fina gränssnitts-grunkor (game, generalskill etc).
+    NormalDist-grunkan är ok däremot, används faktiskt i matten
     """
 
     def _convert_game_outcome(self, outcome: Outcome):
@@ -265,11 +260,6 @@ class TrueskillAdvancedAdapter(TrueskillAdapter[GeneralSkill]):
 
 
 class TrueskillAdvancedAttackDefenseAdapter(TrueskillAdapter[AttackDefenseSkill]):
-    """
-    Här ska gränsen mellan fina gränssnitts-grunkor (klasser) gå.
-    NormalDist-grunkan är ok däremot - används faktiskt i matten
-    """
-
     def __init__(self, model:TrueskillAdvancedAttackDefense):
         self.model = model
 
@@ -446,6 +436,10 @@ class TrueSkillBasicGibbsSampling:
     Class implementing Gibbs sampling for TrueSkill
     Currently limited to the model class TrueSkill-basic but could be generalized to handle any model
     """
+    def __init__(self, model, burn_in_time, num_t):
+        self.model = model
+        self.burn_in_time = burn_in_time
+        self.num_t = num_t
 
     # fix later
     # @staticmethod
@@ -467,20 +461,6 @@ class TrueSkillBasicGibbsSampling:
     #     plt.legend()
     #     plt.show()
 
-    def get_posterior(
-        self,
-        winner: NormalDistribution,
-        loser: NormalDistribution,
-    ) -> tuple[NormalDistribution, NormalDistribution]:
-        # model,
-        # t_range=1000,
-        # burn_in_time=50,
-
-        sample_series = self._gibbs_init(winner, loser)
-        sample_series = self._gibbs_run_samples(sample_series, winner, loser)
-        sample_series = self._post_process_sample_series(sample_series)
-        winner_post, loser_post = self._extract_posterior_from_series(sample_series)
-        return winner_post, loser_post
 
     def _extract_posterior_from_series(self, sample_series):
         winner = sample_series[:, 0]
@@ -526,10 +506,20 @@ class TrueSkillBasicGibbsSampling:
         x[0, :] = [winner.mean, loser.mean, winner.mean - loser.mean]
         return x
 
-    def __init__(self, model, burn_in_time, num_t):
-        self.model = model
-        self.burn_in_time = burn_in_time
-        self.num_t = num_t
+    def get_posterior(
+        self,
+        winner: NormalDistribution,
+        loser: NormalDistribution,
+    ) -> tuple[NormalDistribution, NormalDistribution]:
+        # model,
+        # t_range=1000,
+        # burn_in_time=50,
+
+        sample_series = self._gibbs_init(winner, loser)
+        sample_series = self._gibbs_run_samples(sample_series, winner, loser)
+        sample_series = self._post_process_sample_series(sample_series)
+        winner_post, loser_post = self._extract_posterior_from_series(sample_series)
+        return winner_post, loser_post
 
     def get_probabilities(self, home, away):
         return self.model.get_probabilities(home, away)
@@ -752,30 +742,6 @@ def marginal_distribution(A, b, cov_ba, mu_a, cov_a):
     except ValueError:
         raise NotImplementedError("ERROR: No support for multidimensional distributions for p(x_b)")
         # return mu_b, cov_b
-
-
-def moment_match_truncated_gauss(start, end, m0, s0):
-    a_scaled, b_scaled = (start - m0) / np.sqrt(s0), (end - m0) / np.sqrt(s0)
-    m = truncnorm.mean(a_scaled, b_scaled, loc=m0, scale=np.sqrt(s0))
-    s = truncnorm.var(a_scaled, b_scaled, loc=m0, scale=np.sqrt(s0))
-    return m, s
-
-
-def get_gaussian_density_function(mean, variance, start, stop):
-    x = np.linspace(start, stop, 100)
-    curve = norm.pdf(x, loc=mean, scale=np.sqrt(variance))
-    return x, curve
-
-
-def get_cumulative_distribution_function(x1, x2, mean=0, var=1):
-    if x1 > x2:
-        raise ValueError(f"{x1=}<{x2=}")
-    return norm.cdf(x2, mean, np.sqrt(var)) - norm.cdf(x1, mean, np.sqrt(var))
-
-
-def get_gaussian_density_function_for_plotting(mean, variance):
-    var_3 = 3 * np.sqrt(variance)
-    return get_gaussian_density_function(mean, variance, mean - var_3, mean + var_3)
 
 
 class TrueskillAdvanced:

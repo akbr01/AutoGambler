@@ -1,0 +1,4 @@
+Lägg till att variansen ökar över tid (fixa general tidsstegning, ev då lägg in flera sporter/källor)
+Ev att lag måste ha spelat en antal matcher innan vi bettar på den
+fixa en graf med lagens skill över tid
+lägg in fler validate parameters i adaptrarna - tror det kanske är lite konstigt/fel där just nu
