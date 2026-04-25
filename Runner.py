@@ -104,18 +104,18 @@ def test():
     print(engine.state)
 
     print("Training and predicting....")
-    strategy = Prediction.ValueBetStrategy(4.0, Prediction.KellyBetScaler())
+    strategy = Prediction.ValueBetStrategy(0.05, Prediction.KellyBetScaler())
     # total, correct = 0,0
     budget = 100
     b_lst = [budget]
-    # TODO: De måste ha kört ett antal gånger först
     for inx, row in df_test.iterrows():
         home = str(row["Home"])
         away = str(row["Away"])
         game = Model.Game(home, away)
         pred = engine.predict(game)
         market_odds = Prediction.MarketOdds.from_floats(row["home_decimal"], row["away_decimal"], row["tie_decimal"])
-        if team_count[home] > 10 and team_count[away] > 10:
+        #NOTE: De måste ha kört ett antal gånger först
+        if team_count[home] > 5 and team_count[away] > 5:
             bet_lst = strategy.decide(pred, market_odds)
         else:
             print(f"skipping bet on {game}")
@@ -132,6 +132,7 @@ def test():
     # print(f"{correct}/{total} = {correct/total}")
 
     print(engine.state)
+    print(len(b_lst))
     plt.figure(1)
     plt.plot(b_lst)
     # teams = [s.teams for s in state_history]
