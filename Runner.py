@@ -125,7 +125,7 @@ def test():
     state.home_advantage = initial_home_advantage_dist
     engine = Model.GameEngine(adapter, state)
 
-    strategy = Prediction.ValueBetStrategy(bet_threshold, Prediction.KellyBetScaler(kelly_multiplier))
+    strategy = Prediction.BlendedBetStrategy(1, bet_threshold, Prediction.KellyBetScaler(kelly_multiplier))
 
     team_count = {k: 0 for k in state.teams.keys()}
     prev_date = None
@@ -211,7 +211,8 @@ def search_params():
         state.home_advantage = initial_home_advantage_dist
         engine = Model.GameEngine(adapter, state)
 
-        strategy = Prediction.ValueBetStrategy(params["bet_threshold"], Prediction.KellyBetScaler(params["kelly_multiplier"]))
+        # strategy = Prediction.ValueBetStrategy(params["bet_threshold"], Prediction.KellyBetScaler(params["kelly_multiplier"]))
+        strategy = Prediction.BlendedBetStrategy(0.9, params["bet_threshold"], Prediction.KellyBetScaler(params["kelly_multiplier"]))
 
         team_count = {k: 0 for k in state.teams.keys()}
         prev_date = None

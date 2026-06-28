@@ -66,14 +66,22 @@ class MarketOdds:
     def from_floats(cls, home:float, away:float, tie:float):
         return cls(home=Odds(home), away=Odds(away), tie=Odds(tie))
 
-    def implied_probabilities(self)->dict[str, float]:
+    @property
+    def implied_probabilities_raw(self)->dict[str, float]:
         return {"home": self.home.implied_probability, "away": self.away.implied_probability, "tie": self.tie.implied_probability}
 
+    @property
+    def implied_probabilities(self)->dict[str, float]:
+        tot_prob = self.bookmaker_margin
+        return {"home": self.home.implied_probability/tot_prob, "away": self.away.implied_probability/tot_prob, "tie": self.tie.implied_probability/tot_prob}
+
+    @property
     def break_even_probablilities(self)->dict[str, float]:
         return {"home": self.home.break_even_probability, "away": self.away.break_even_probability, "tie": self.tie.break_even_probability}
 
-    def bookmaker_margin_(self) -> float:
-        return sum(imp for imp in self.implied_probabilities().values())
+    @property
+    def bookmaker_margin(self) -> float:
+        return sum(imp for imp in self.implied_probabilities_raw.values())
 
 
 def evaluate_bet(bet: Bet, outcome: Model.Outcome)->float:
@@ -91,20 +99,30 @@ class KellyBetScaler(BetScaler):
         return self.multiplier * (prob * (payout + 1) - 1) / payout
 
 
-class ValueBetStrategy(BetStrategy):
-    def __init__(self, treshold:float, scaler:BetScaler):
-        self.treshold = treshold
+class BlendedValueBetStrategy(BetStrategy):
+    def __init__(self, alpha: float, threshold: float, scaler: BetScaler):
+        self.alpha = alpha # Blending market- and model probabilities (alpha=1 means 100% model)
+        self.threshold = threshold
         self.scaler = scaler
 
-    def decide(self, pred:Model.PredictionResult, market_odds:MarketOdds)->list[Bet]:
-        exp_home = odds_expected_value(pred.p_home, market_odds.home.net, -1)
-        exp_away = odds_expected_value(pred.p_away, market_odds.away.net, -1)
-        exp_tie = odds_expected_value(pred.p_tie, market_odds.tie.net, -1)
-        mapping = {BetSide.HOME: (pred.p_home, market_odds.home, exp_home), BetSide.AWAY: (pred.p_away, market_odds.away, exp_away), BetSide.TIE: (pred.p_tie, market_odds.tie, exp_tie)}
+    def decide(self, pred: Model.PredictionResult, market_odds: MarketOdds) -> list[Bet]:
+        market_probs = market_odds.implied_probabilities
+        p_home = self.alpha * pred.p_home + (1 - self.alpha) * market_probs["home"]
+        p_away = self.alpha * pred.p_away + (1 - self.alpha) * market_probs["away"]
+        p_tie  = self.alpha * pred.p_tie  + (1 - self.alpha) * market_probs["tie"]
+
+        exp_home = odds_expected_value(p_home, market_odds.home.net, -1)
+        exp_away = odds_expected_value(p_away, market_odds.away.net, -1)
+        exp_tie  = odds_expected_value(p_tie,  market_odds.tie.net,  -1)
+
+        mapping = {
+            BetSide.HOME: (p_home, market_odds.home, exp_home),
+            BetSide.AWAY: (p_away, market_odds.away, exp_away),
+            BetSide.TIE:  (p_tie,  market_odds.tie,  exp_tie),
+        }
         bet_lst = []
         for side, (prob, odds, exp) in mapping.items():
-            if exp > self.treshold:
-                # print(f"{side=}, {prob=}, {odds=}, {exp=}")
+            if exp > self.threshold:
                 bet_size = self.scaler.scale(prob, odds.net)
                 bet_lst.append(Bet(side, odds, bet_size))
         return bet_lst
