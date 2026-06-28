@@ -2,6 +2,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import numpy as np
 import re
 import Model
 import Prediction
@@ -86,21 +87,30 @@ def apply_skill_decay(state: Model.ModelState, days_elapsed: int, decay_rate: fl
             state.teams[team_name] = Model.AttackDefenseSkill(attack=new_atk, defense=new_def)
 
 
-# sloppy test code
+def sharpe_ratio(budget_history: list[float], risk_free_rate: float = 0.0) -> float:
+    if len(budget_history) < 3:
+        return 0.0
+    returns = [(budget_history[i+1] - budget_history[i]) / budget_history[i] for i in range(len(budget_history)-1)]
+    if np.std(returns, ddof=1) == 0:
+        return 0.0
+    return (np.mean(returns) - risk_free_rate) / np.std(returns, ddof=1)
+
+
+# Test the model here
 def test():
-    initial_team_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
     initial_home_advantage_dist = Model.NormalDistribution(0.16, 10)
     default_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
 
     # Datasets: list of (reader, filepath) pairs
     datasets = [
         (ReaderGeneral(["leagueID", "season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "date", "homeTeamID", "awayTeamID", "homeGoals", "awayGoals", "%Y-%m-%d %H:%M:%S"), "./datasets/games.csv"),
-        # (ReaderGeneral(["League", "Season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "Date", "Home", "Away", "HG", "AG", "%d/%m/%Y"), "./datasets/SWE.csv"),
+        (ReaderGeneral(["League", "Season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "Date", "Home", "Away", "HG", "AG", "%d/%m/%Y"), "./datasets/SWE.csv"),
     ]
 
-    train_fraction = 0.8
-    decay_rate = 0.1
-    min_observed_games_to_play = 20
+    train_fraction = 0.6
+    decay_rate = 0.5
+    min_observed_games_to_play = 10
+    # bet_threshold = 5
     bet_threshold = 5
     kelly_multiplier = 0.2
 
@@ -177,16 +187,18 @@ def search_params():
 
     datasets = [
         (ReaderGeneral(["leagueID", "season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "date", "homeTeamID", "awayTeamID", "homeGoals", "awayGoals", "%Y-%m-%d %H:%M:%S"), "./datasets/games.csv"),
+        (ReaderGeneral(["League", "Season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "Date", "Home", "Away", "HG", "AG", "%d/%m/%Y"), "./datasets/SWE.csv"),
     ]
     df = merge_datasets(*datasets)
+
+    use_sharpe = True
 
     param_space = {
         "var_t": Opt.UniformFloat(1, 100),
         "var_y": Opt.UniformFloat(1, 100),
-        # "train_fraction": Opt.UniformFloat(0.5, 0.95),
         "train_fraction": 0.7,
         "decay_rate": Opt.UniformFloat(0, 5),
-        "bet_threshold": Opt.UniformFloat(0, 1),
+        "bet_threshold": Opt.UniformFloat(0, 10), # 20
         "kelly_multiplier": Opt.UniformFloat(0, 1),
         "min_games": Opt.UniformInt(1, 50),
     }
@@ -204,6 +216,7 @@ def search_params():
         team_count = {k: 0 for k in state.teams.keys()}
         prev_date = None
         budget = 100
+        budget_history = [budget]
         date_cutoff = df["Date"].quantile(params["train_fraction"])
 
         for date, group in df.groupby("Date", sort=True):
@@ -231,19 +244,23 @@ def search_params():
                     for bet in bet_lst:
                         bet_delta = Prediction.evaluate_bet(bet, game.score.outcome)
                         budget += bet_delta
+                        budget_history.append(budget)
+
+        if use_sharpe:
+            return sharpe_ratio(budget_history)
         return budget
 
     searcher = Opt.RandomSearch(
         param_space=param_space,
         eval_fn=eval_fn,
-        n_trials=30,
+        n_trials=50,
         maximize=True,
         seed=42,
     )
     searcher.search(plot=True)
 
 
-# test()
 
 if __name__ == "__main__":
-    search_params()
+    # search_params()
+    test()
