@@ -18,6 +18,8 @@ venv/
 .DS_Store
 Thumbs.db
 
+AGENTS.md
+
 # Data files (optional)
 # *.csv
 # *.parquet

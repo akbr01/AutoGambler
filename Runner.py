@@ -59,21 +59,31 @@ class ReaderGeneral(Reader):
 
 
 class StateInitializer:
-    def __init__(self, reader: Reader, default_skill:Model.GeneralSkill|Model.AttackDefenseSkill):
-        self.reader = reader
+    def __init__(self, default_skill: Model.GeneralSkill | Model.AttackDefenseSkill):
         self.default_skill = default_skill
 
-    def _get_unique_teams_from_df(self,
-        df: pd.DataFrame,
-    ):
+    def initialize_modelstate(self, df: pd.DataFrame) -> Model.ModelState:
         all_teams = pd.concat([df["Home"], df["Away"]]).unique()
-        return all_teams
+        return Model.ModelState(teams={team: self.default_skill for team in all_teams})
 
-    def initialize_modelstate(self, file: str):
-        df = self.reader.get_dataframe(file)
-        all_teams = self._get_unique_teams_from_df(df)
-        state = Model.ModelState(teams={team: self.default_skill for team in all_teams})
-        return df, state
+
+def merge_datasets(*pairs: tuple[Reader, str]) -> pd.DataFrame:
+    dfs = [reader.get_dataframe(path) for reader, path in pairs]
+    merged = pd.concat(dfs, ignore_index=True)
+    merged = merged.sort_values("Date").reset_index(drop=True)
+    return merged
+
+
+def apply_skill_decay(state: Model.ModelState, days_elapsed: int, decay_rate: float = 0.5):
+    for team_name in list(state.teams.keys()):
+        skill = state.teams[team_name]
+        if isinstance(skill, Model.GeneralSkill):
+            new_nd = Model.NormalDistribution(skill.skill.mean, skill.skill.variance + decay_rate * days_elapsed)
+            state.teams[team_name] = Model.GeneralSkill(skill=new_nd)
+        elif isinstance(skill, Model.AttackDefenseSkill):
+            new_atk = Model.NormalDistribution(skill.attack.mean, skill.attack.variance + decay_rate * days_elapsed)
+            new_def = Model.NormalDistribution(skill.defense.mean, skill.defense.variance + decay_rate * days_elapsed)
+            state.teams[team_name] = Model.AttackDefenseSkill(attack=new_atk, defense=new_def)
 
 
 # sloppy test code
@@ -82,104 +92,158 @@ def test():
     initial_home_advantage_dist = Model.NormalDistribution(0.16, 10)
     default_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
 
-    # Choose datafile here
-    reader = ReaderGeneral(["leagueID", "season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "date", "homeTeamID", "awayTeamID", "homeGoals", "awayGoals", "%Y-%m-%d %H:%M:%S")
-    datafile = "./datasets/games.csv" # kaggle
+    # Datasets: list of (reader, filepath) pairs
+    datasets = [
+        (ReaderGeneral(["leagueID", "season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "date", "homeTeamID", "awayTeamID", "homeGoals", "awayGoals", "%Y-%m-%d %H:%M:%S"), "./datasets/games.csv"),
+        # (ReaderGeneral(["League", "Season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "Date", "Home", "Away", "HG", "AG", "%d/%m/%Y"), "./datasets/SWE.csv"),
+    ]
 
-    # reader = ReaderGeneral(["League", "Season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "Date", "Home", "Away", "HG", "AG", "%d/%m/%Y")
-    # datafile = "./datasets/SWE.csv" #  footballfatacouk
+    train_fraction = 0.8
+    decay_rate = 0.1
+    min_observed_games_to_play = 20
+    bet_threshold = 5
+    kelly_multiplier = 0.2
 
-    # Choose skill model
+    # Merge and sort all datasets by date
+    df = merge_datasets(*datasets)
+    date_cutoff = df["Date"].quantile(train_fraction)
+    print(f"Training cutoff: {date_cutoff}")
 
-    df, state = StateInitializer(reader, Model.AttackDefenseSkill(default_dist, default_dist)).initialize_modelstate(datafile)
+    state = StateInitializer(Model.AttackDefenseSkill(default_dist, default_dist)).initialize_modelstate(df)
     model = Model.TrueskillAdvancedAttackDefense(Model.DEFAULT_VAR_T, Model.DEFAULT_VAR_T)
     adapter = Model.TrueskillAdvancedAttackDefenseAdapter(model)
-
-    # df, state = StateInitializer(reader, Model.GeneralSkill(default_dist)).initialize_modelstate(datafile)
-    # model = Model.TrueskillAdvanced(Model.DEFAULT_VAR_T, 1)
-    # adapter = Model.TrueskillAdvancedAdapter(model)
-    # model = Model.TrueSkillBasicGibbsSampling(Model.TrueSkillModelBasic(Model.DEFAULT_VAR_T), 200, 2000)
-    # adapter = Model.TrueskillBasicAdapter(model)
-    # model = Model.TrueSkillBasicMessagePassing()
-    # adapter = Model.TrueskillBasicAdapter(model)
-
-    min_observed_games_to_play = 20
-
-    print(df)
-
-    team_count = {k:0 for k in state.teams.keys()}
-    print(f"{team_count=}")
     state.home_advantage = initial_home_advantage_dist
-    # print(df, state)
-    # print(state.teams.keys())
-    # print(state.teams.get("AIK"))
-    # print(state.teams.get("Orebro"))
-
-    # model = Model.TrueskillAdvanced(Model.DEFAULT_VAR_T, 1)
-    # adapter = Model.TrueskillAdvancedAdapter(model)
     engine = Model.GameEngine(adapter, state)
-    state_history = []
-    df_train = df.iloc[:500]
-    df_test = df.iloc[500:]
-    print("Training....")
-    for inx, row in df_train.iterrows():
-        home = str(row["Home"])
-        away = str(row["Away"])
-        team_count[home] += 1
-        team_count[away] += 1
-        game = Model.Game(home, away, Model.Score(int(row["HG"]), int(row["AG"])))
-        result = engine.update(game)
-        state_history.append(engine.state)
-    print("Training complete....")
-    print(engine.state)
 
-    print("Training and predicting....")
-    strategy = Prediction.ValueBetStrategy(0.05, Prediction.KellyBetScaler())
-    # total, correct = 0,0
+    strategy = Prediction.ValueBetStrategy(bet_threshold, Prediction.KellyBetScaler(kelly_multiplier))
+
+    team_count = {k: 0 for k in state.teams.keys()}
+    prev_date = None
     budget = 100
-    b_lst = [budget]
-    dates = [df_test.iloc[0]["Date"]]
-    for inx, row in df_test.iterrows():
-        home = str(row["Home"])
-        away = str(row["Away"])
-        game = Model.Game(home, away)
-        pred = engine.predict(game)
-        market_odds = Prediction.MarketOdds.from_floats(row["home_decimal"], row["away_decimal"], row["tie_decimal"])
-        #NOTE: De måste ha kört ett antal gånger först
-        if team_count[home] > min_observed_games_to_play and team_count[away] > min_observed_games_to_play:
-            bet_lst = strategy.decide(pred, market_odds)
-        else:
-            print(f"skipping bet on {game}")
-            bet_lst = []
-        game = Model.Game(home, away, Model.Score(int(row["HG"]), int(row["AG"])))
-        engine.update(game)
-        team_count[home] += 1
-        team_count[away] += 1
-        for bet in bet_lst:
-            bet_delta = Prediction.evaluate_bet(bet, game.score.outcome)
-            budget = budget + bet_delta
-            # print(f"({bet_delta}) Placed bet on {bet.side} and outcome was {game.score.outcome}")
-            b_lst.append(budget)
-            dates.append(row["Date"])
-    # print(f"{correct}/{total} = {correct/total}")
+    budget_history = [budget]
+    date_history = [df["Date"].iloc[0]]
 
-    print(engine.state)
-    print(len(b_lst))
+    print("Running date-driven loop...")
+    for date, group in df.groupby("Date", sort=True):
+        days_elapsed = (date - prev_date).days if prev_date is not None else 0
+        prev_date = date
+
+        if days_elapsed > 0 and decay_rate > 0:
+            apply_skill_decay(engine.state, days_elapsed, decay_rate)
+
+        is_test = date >= date_cutoff
+
+        for _, row in group.iterrows():
+            home = str(row["Home"])
+            away = str(row["Away"])
+            team_count[home] += 1
+            team_count[away] += 1
+
+            if is_test:
+                game_no_score = Model.Game(home, away)
+                pred = engine.predict(game_no_score)
+                market_odds = Prediction.MarketOdds.from_floats(row["home_decimal"], row["away_decimal"], row["tie_decimal"])
+
+                if team_count[home] > min_observed_games_to_play and team_count[away] > min_observed_games_to_play:
+                    bet_lst = strategy.decide(pred, market_odds)
+                else:
+                    bet_lst = []
+
+            game = Model.Game(home, away, Model.Score(int(row["HG"]), int(row["AG"])))
+            engine.update(game)
+
+            if is_test:
+                for bet in bet_lst:
+                    bet_delta = Prediction.evaluate_bet(bet, game.score.outcome)
+                    budget += bet_delta
+                    budget_history.append(budget)
+                    date_history.append(date)
+
+    print(f"Final budget: {budget:.2f}")
+    print(f"Bets placed: {len(budget_history) - 1}")
 
     fig, ax = plt.subplots()
-    ax.plot(dates, b_lst)
-    # ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    ax.plot(date_history, budget_history)
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    # ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
     fig.autofmt_xdate()
-
     plt.show()
 
 
-    # teams = [s.teams for s in state_history]
-    # for team in state.teams.keys():
-    #     plt.plot(dates, [t[team].attack.mean for t in teams], label=team)
-    # plt.legend()
-    # plt.show()
+def search_params():
+    import Optimization as Opt
 
-test()
+    initial_home_advantage_dist = Model.NormalDistribution(0.16, 10)
+    default_dist = Model.NormalDistribution(Model.DEFAULT_START_MU, Model.DEFAULT_START_VAR)
+
+    datasets = [
+        (ReaderGeneral(["leagueID", "season"], r"C?H$", r"^(?!.*ID$).*C?D$", r"C?A$", "date", "homeTeamID", "awayTeamID", "homeGoals", "awayGoals", "%Y-%m-%d %H:%M:%S"), "./datasets/games.csv"),
+    ]
+    df = merge_datasets(*datasets)
+
+    param_space = {
+        "var_t": Opt.UniformFloat(1, 100),
+        "var_y": Opt.UniformFloat(1, 100),
+        # "train_fraction": Opt.UniformFloat(0.5, 0.95),
+        "train_fraction": 0.7,
+        "decay_rate": Opt.UniformFloat(0, 5),
+        "bet_threshold": Opt.UniformFloat(0, 1),
+        "kelly_multiplier": Opt.UniformFloat(0, 1),
+        "min_games": Opt.UniformInt(1, 50),
+    }
+
+
+    def eval_fn(params: dict) -> float:
+        state = StateInitializer(Model.AttackDefenseSkill(default_dist, default_dist)).initialize_modelstate(df)
+        model = Model.TrueskillAdvancedAttackDefense(params["var_t"], params["var_y"])
+        adapter = Model.TrueskillAdvancedAttackDefenseAdapter(model)
+        state.home_advantage = initial_home_advantage_dist
+        engine = Model.GameEngine(adapter, state)
+
+        strategy = Prediction.ValueBetStrategy(params["bet_threshold"], Prediction.KellyBetScaler(params["kelly_multiplier"]))
+
+        team_count = {k: 0 for k in state.teams.keys()}
+        prev_date = None
+        budget = 100
+        date_cutoff = df["Date"].quantile(params["train_fraction"])
+
+        for date, group in df.groupby("Date", sort=True):
+            days_elapsed = (date - prev_date).days if prev_date is not None else 0
+            prev_date = date
+            if days_elapsed > 0 and params["decay_rate"] > 0:
+                apply_skill_decay(engine.state, days_elapsed, params["decay_rate"])
+            is_test = date >= date_cutoff
+            for _, row in group.iterrows():
+                home = str(row["Home"])
+                away = str(row["Away"])
+                team_count[home] += 1
+                team_count[away] += 1
+                if is_test:
+                    game_no_score = Model.Game(home, away)
+                    pred = engine.predict(game_no_score)
+                    market_odds = Prediction.MarketOdds.from_floats(row["home_decimal"], row["away_decimal"], row["tie_decimal"])
+                    if team_count[home] > params["min_games"] and team_count[away] > params["min_games"]:
+                        bet_lst = strategy.decide(pred, market_odds)
+                    else:
+                        bet_lst = []
+                game = Model.Game(home, away, Model.Score(int(row["HG"]), int(row["AG"])))
+                engine.update(game)
+                if is_test:
+                    for bet in bet_lst:
+                        bet_delta = Prediction.evaluate_bet(bet, game.score.outcome)
+                        budget += bet_delta
+        return budget
+
+    searcher = Opt.RandomSearch(
+        param_space=param_space,
+        eval_fn=eval_fn,
+        n_trials=30,
+        maximize=True,
+        seed=42,
+    )
+    searcher.search(plot=True)
+
+
+# test()
+
+if __name__ == "__main__":
+    search_params()
